@@ -1,25 +1,24 @@
 import os
 import requests
+import logging
 from dotenv import load_dotenv
 
 # Load .env file
 load_dotenv()
 
-# API Key
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+# Logging Setup (Terminal မှာ Error တွေကို ထင်ထင်ရှားရှားပြဖို့)
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
-# ================================
-#  Gemini 2.0 Flash Experimental (Free)
-# ================================
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 NEW_MODEL = "google/gemini-2.0-flash-exp:free"
 
-# -------------------------------------------------
-#  Thai ↔ Myanmar Translation Function
-# -------------------------------------------------
 def get_translation(text: str):
     url = "https://openrouter.ai/api/v1/chat/completions"
 
-    # Prompt: Format အတိအကျရအောင် ခိုင်းစေခြင်း
     prompt = f"""
     You are a professional Thai-Myanmar dictionary.
     Input: "{text}"
@@ -51,20 +50,26 @@ def get_translation(text: str):
     }
 
     try:
-        # TIMEOUT INCREASED: 60 seconds
-        # Free model တွေက ကြာတတ်လို့ စက္ကန့် ၆၀ အထိ စောင့်ခိုင်းလိုက်တာပါ
-        r = requests.post(url, json=payload, headers=headers, timeout=60)
-        r.raise_for_status()
-        return r.json()["choices"][0]["message"]["content"]
+        logger.info(f"Sending request to OpenRouter... Input: {text[:20]}...")
+        response = requests.post(url, json=payload, headers=headers, timeout=60)
+        
+        # API က 200 OK မပြန်ရင် Error အကြောင်းရင်းကို Terminal မှာ ထုတ်ပြမယ်
+        if response.status_code != 200:
+            error_msg = response.text
+            logger.error(f"❌ API Request Failed: Status {response.status_code}")
+            logger.error(f"❌ Error Details: {error_msg}")
+            return f"Error: API returned {response.status_code}"
 
+        return response.json()["choices"][0]["message"]["content"]
+
+    except requests.exceptions.Timeout:
+        logger.error("❌ Request Timed Out (60s)")
+        return "Error: Connection Timed Out"
     except Exception as e:
-        print(f"❌ Translation API Error: {e}")
+        logger.error(f"❌ Unexpected Error: {str(e)}")
         return f"Error: {str(e)}"
 
 
-# -------------------------------------------------
-#  Word/phrase Explanation Function
-# -------------------------------------------------
 def get_explanation(text: str):
     url = "https://openrouter.ai/api/v1/chat/completions"
 
@@ -94,11 +99,13 @@ def get_explanation(text: str):
     }
 
     try:
-        # TIMEOUT INCREASED: 60 seconds
-        r = requests.post(url, json=payload, headers=headers, timeout=60)
-        r.raise_for_status()
-        return r.json()["choices"][0]["message"]["content"]
+        response = requests.post(url, json=payload, headers=headers, timeout=60)
+        if response.status_code != 200:
+            logger.error(f"❌ Explanation API Failed: {response.text}")
+            return "Error: API Failed"
+            
+        return response.json()["choices"][0]["message"]["content"]
 
     except Exception as e:
-        print(f"❌ Explanation API Error: {e}")
+        logger.error(f"❌ Explanation Error: {e}")
         return "မေးမြန်းမှု များပြားနေပါသဖြင့် ခေတ္တစောင့်ဆိုင်းပေးပါ။"
