@@ -2,174 +2,205 @@ import os
 import tempfile
 import asyncio
 import re
+from io import BytesIO
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, constants
 from telegram.ext import ContextTypes
 
-# OpenRouter ကို သုံးဖို့
+# OpenRouter (Service)
 from src.services.openrouter import get_translation, get_explanation
+# Audio Utils (Existing)
 from src.utils.audio import convert_ogg_to_mp3
 from src.utils.state import is_bot_active
 from src.config import ADMIN_IDS
-# TTS Link အတွက် Utility အသစ်
-from src.utils.tts import get_thai_tts_link
 
-# Regular Expression to extract structured data from AI response
-# AI ကို structured format နဲ့ပြန်ပေးဖို့ အားထုတ်ခိုင်းထားတဲ့အတွက် ဒီ Regex တွေနဲ့ ခွဲထုတ်ပါမယ်
-TRANSLATION_PATTERN = re.compile(r'\*\*2\. Translation\*\*: (.+)', re.IGNORECASE)
-ROMANIZATION_PATTERN = re.compile(r'\*\*3\. Romanization\*\*: (.+)', re.IGNORECASE)
-DEFINITION_PATTERN = re.compile(r'\*\*4\. Definition\*\*: (.+)', re.IGNORECASE)
-EXAMPLE_PATTERN = re.compile(r'\*\*5\. Example Sentence\*\*: (.+)', re.IGNORECASE)
+# Audio for TTS (New)
+from gtts import gTTS
+
+# --- REGEX PATTERNS (Improved) ---
+# AI က Format အမျိုးမျိုးပေးလာရင် ဖမ်းလို့ရအောင် ပြင်ထားသည်
+TRANSLATION_PATTERN = re.compile(r'\*\*.*Translation\*\*:\s*(.+)', re.IGNORECASE)
+ROMANIZATION_PATTERN = re.compile(r'\*\*.*Romanization\*\*:\s*(.+)', re.IGNORECASE)
+DEFINITION_PATTERN = re.compile(r'\*\*.*Definition\*\*:\s*(.+)', re.IGNORECASE)
+EXAMPLE_PATTERN = re.compile(r'\*\*.*Example.*?\*\*:\s*(.+)', re.IGNORECASE)
+
+# Helper: Clean up markdown artifacts (*ဖြုတ်ရန်)
+def clean_text(text):
+    if text:
+        return text.replace('*', '').strip()
+    return ""
 
 # Helper function for formatting
 def format_ai_response(raw_text: str) -> tuple[str, str]:
     """
-    AI က ပြန်ပေးတဲ့ စာသားကို ခွဲခြမ်းစိတ်ဖြာပြီး Emoji/HTML format နဲ့ ပြန်ပေးသည်။
-    :return: (formatted_text, thai_text_for_tts)
+    AI Output ကို လှလှပပ Card ပုံစံ ပြင်မည်။
     """
-    
-    # 1. Data ကို ထုတ်ယူပါ
-    translation = TRANSLATION_PATTERN.search(raw_text)
-    romanization = ROMANIZATION_PATTERN.search(raw_text)
-    definition = DEFINITION_PATTERN.search(raw_text)
-    example = EXAMPLE_PATTERN.search(raw_text)
-    
-    thai_text_for_tts = "" # TTS အတွက် ထိုင်းစာသား သိမ်းရန်
-    
-    # 2. Output Formatting လုပ်ပါ
-    formatted_output = ""
-    
-    # Translation (မဖြစ်မနေ ပါရမည့် အချက်)
-    trans_text = translation.group(1).strip() if translation else raw_text
-    formatted_output += f"🇲🇲 🇹🇭 <b>{trans_text}</b>\n\n"
-    
-    if romanization:
-        # Romanization က (Thai) စာသားပါရမည်
-        roman_text = romanization.group(1).strip()
-        # 3. TTS အတွက် ထိုင်းစာသားကို Romanization အပိုင်းကနေ ယူသည်
-        # AI က 'Thai: คำ' (သို့) 'คำ' ကိုသာ ပေးဖို့ မျှော်လင့်ပါသည်
-        thai_match = re.search(r'(Thai:)?\s*([ก-๙\s\(\)]+)', roman_text)
-        if thai_match:
-             thai_text_for_tts = thai_match.group(2).strip().replace('(', '').replace(')', '')
-        
-        formatted_output += f"🗣️ Romanization: <i>{roman_text}</i>\n"
-        
-    if definition:
-        formatted_output += f"📖 Definition: {definition.group(1).strip()}\n"
-        
-    if example:
-        formatted_output += f"📝 Example: {example.group(1).strip()}\n"
-        
-    # AI က Structured Output မပေးရင် ၎င်း၏ စာသားကိုပဲ ပြန်ပို့သည်
-    if not translation:
+    # 1. Data Extract
+    translation_match = TRANSLATION_PATTERN.search(raw_text)
+    romanization_match = ROMANIZATION_PATTERN.search(raw_text)
+    definition_match = DEFINITION_PATTERN.search(raw_text)
+    example_match = EXAMPLE_PATTERN.search(raw_text)
+
+    # Data မတွေ့ရင် Raw အတိုင်းပြန်ပေးမယ် (Error/Chat message ဖြစ်နိုင်လို့)
+    if not translation_match:
         return raw_text, ""
+
+    trans_text = clean_text(translation_match.group(1))
+    roman_text = clean_text(romanization_match.group(1)) if romanization_match else ""
+    def_text = clean_text(definition_match.group(1)) if definition_match else ""
+    ex_text = clean_text(example_match.group(1)) if example_match else ""
+
+    # 2. Output Design (Visual Upgrade)
+    # Header
+    formatted_output = (
+        f"🎯 <b>Translation</b>\n"
+        f"╰┈➤ <code>{trans_text}</code>\n\n"
+    )
+
+    thai_text_for_tts = ""
+    
+    # Romanization & Pronunciation logic
+    if roman_text:
+        formatted_output += (
+            f"🗣️ <b>Pronunciation</b>\n"
+            f"╰┈➤ <i>{roman_text}</i>\n\n"
+        )
+        # Romanization ထဲက ထိုင်းစာလုံးကို ရှာဖွေခြင်း (အသံထွက်ဖွင့်ဖို့)
+        thai_char_match = re.search(r'([ก-๙]+)', roman_text)
+        if thai_char_match:
+            thai_text_for_tts = thai_char_match.group(1)
+        else:
+            # Romanization မှာမပါရင် Translation ကဟာကို ယူမယ် (အကယ်၍ ထိုင်းပြန်လာတာဆိုရင်)
+            if re.search(r'[ก-๙]', trans_text):
+                thai_text_for_tts = trans_text
+
+    # Definition
+    if def_text:
+        formatted_output += (
+            f"📚 <b>Definition</b>\n"
+            f"╰┈➤ {def_text}\n\n"
+        )
+
+    # Example
+    if ex_text:
+        formatted_output += (
+            f"📝 <b>Example</b>\n"
+            f"╰┈➤ {ex_text}\n"
+        )
+
+    formatted_output += "\n─────────────────"
 
     return formatted_output, thai_text_for_tts
 
+# --- NEW: Send Audio Directly (Memory Stream) ---
+async def send_audio_pronunciation(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
+    """Google TTS ကိုသုံးပြီး Server မှာ ဖိုင်မသိမ်းဘဲ အသံပို့မည်"""
+    if not text: return
+
+    try:
+        # In-memory binary stream (Zeabur storage မပြည့်အောင်)
+        tts = gTTS(text=text, lang='th')
+        audio_fp = BytesIO()
+        tts.write_to_fp(audio_fp)
+        audio_fp.seek(0)
+        
+        # Voice Message အနေနဲ့ ပို့မည်
+        await context.bot.send_voice(
+            chat_id=update.effective_chat.id, 
+            voice=audio_fp, 
+            caption="🔊 အသံထွက်"
+        )
+    except Exception as e:
+        print(f"TTS Error: {e}")
+        # အသံမရရင် ဘာမှမလုပ်ဘဲ ကျော်သွားမယ် (Error မပြဘူး)
 
 # /start command handler
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_text = (
-        "🙏 <b>မင်္ဂလာပါ! (Sawadee Krub/Ka)</b>\n\n"
+        "👋 <b>မင်္ဂလာပါ! (Sawadee Krub/Ka)</b>\n\n"
         "ကျွန်တော်က ထိုင်း-မြန်မာ အပြန်အလှန် ဘာသာပြန် Bot ပါ။\n"
-        "အခမဲ့ AI နည်းပညာကို သုံးထားပါတယ်။\n\n"
+        "🤖 AI နည်းပညာကို သုံးထားပါတယ်။\n\n"
         "👉 <b>အသုံးပြုနည်း:</b>\n"
-        "1. ထိုင်း/မြန်မာ စာသား ရိုက်ပို့ပါ။\n"
-        "2. 🎤 <b>အသံဖိုင် (Voice Msg)</b> ပို့ပြီးလည်း မေးနိုင်ပါသည်။\n"
-        "3. Admin များသည် /admin ဖြင့် ထိန်းချုပ်နိုင်ပါသည်။\n\n"
-        "---"
+        "• ထိုင်း (သို့) မြန်မာလို စာရိုက်ပို့လိုက်ပါ။\n"
+        "• အသံထွက်ကိုပါ တခါတည်း နားထောင်နိုင်ပါတယ်။\n\n"
         "✨ <b>Developed by @MyanmarTecharea</b>"
     )
     await update.message.reply_text(welcome_text, parse_mode=constants.ParseMode.HTML)
 
 
-# Core function to handle request logic with Retries and User Notification
+# Core processing function
 async def _process_and_reply(update: Update, context: ContextTypes.DEFAULT_TYPE, user_input, is_audio=False):
     MAX_RETRIES = 2
-    RETRY_DELAY = 10
+    RETRY_DELAY = 2
 
-    # 1. Initial typing indicator
+    # Typing action ပြမည်
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=constants.ChatAction.TYPING)
 
     for attempt in range(MAX_RETRIES + 1):
         try:
-            # OpenRouter ကနေ ဘာသာပြန်ယူတယ်
+            # 1. OpenRouter Call
             raw_response_text = await asyncio.to_thread(get_translation, user_input)
 
-            # OpenRouter က Error ဖြစ်ရင် ပြန်ပို့သော စာသားကို စစ်ဆေးပြီး Error ထုတ်
-            if "ขออภัย ระบบมีปัญหาชั่วคราว" in raw_response_text or "Error" in raw_response_text:
-                raise Exception(f"API Response Error: {raw_response_text}")
+            if "Error" in raw_response_text:
+                raise Exception(f"API Error")
 
-            # 2. စာသားကို Format လုပ်ခြင်း
+            # 2. Format Response
             formatted_text, thai_text = format_ai_response(raw_response_text)
             
-            # Save last query for "Explain More"
             context.user_data['last_sender'] = update.effective_user.id
             context.user_data['last_query'] = user_input
 
-            # 3. Keyboard ကို ဖန်တီးခြင်း
+            # 3. Buttons
             keyboard_rows = []
-            
-            # TTS Button ထည့်သွင်းခြင်း (ထိုင်းစာသားပါမှသာ ထည့်မည်)
-            if thai_text:
-                tts_link = get_thai_tts_link(thai_text)
-                keyboard_rows.append([InlineKeyboardButton("🔊 ထိုင်းအသံထွက် နားထောင်မယ်", url=tts_link)])
-            
-            # Explain More Button (မူလအတိုင်း)
             keyboard_rows.append([InlineKeyboardButton("📝 ရှင်းလင်းချက် ထပ်ကြည့်မယ်", callback_data="explain")])
-            
             reply_markup = InlineKeyboardMarkup(keyboard_rows)
 
+            # 4. Send Text Reply First
             await update.message.reply_text(
                 formatted_text,
                 reply_markup=reply_markup,
                 parse_mode=constants.ParseMode.HTML
             )
+
+            # 5. Send Audio (အသံဖိုင်ကို သီးသန့်ပို့မည်)
+            if thai_text:
+                # အသံသွင်းနေသည့် Action ပြမည်
+                await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=constants.ChatAction.RECORD_VOICE)
+                await send_audio_pronunciation(update, context, thai_text)
+
             return
 
         except Exception as e:
-            error_message = str(e)
-            
             if attempt < MAX_RETRIES:
                 await asyncio.sleep(RETRY_DELAY)
-                await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=constants.ChatAction.TYPING)
             else:
-                final_error_msg = "⚠️ ယာယီချို့ယွင်းချက်ရှိနေပါသည်။ ခဏနောက် ထပ်ကြိုးစားကြည့်ပါ။"
-                
-                # Admin များအတွက် Debugging
-                if update.effective_user.id in ADMIN_IDS:
-                    final_error_msg += f"\n\n**[DEBUG]** Final API Error: <code>{error_message[:400]}...</code>"
-                
-                await update.message.reply_text(final_error_msg, parse_mode=constants.ParseMode.HTML)
+                await update.message.reply_text(f"⚠️ ယာယီချို့ယွင်းချက်ရှိနေပါသည်။\nError: {str(e)}")
 
 
-# Text message handler (No changes needed)
+# Text message handler
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_bot_active() and update.effective_user.id not in ADMIN_IDS:
-        await update.message.reply_text("⛔️ Bot ကို ပြုပြင်နေပါသည်။ ခဏစောင့်ပါ။")
+        await update.message.reply_text("⛔️ Bot ပြုပြင်နေပါသည်။")
         return
 
     user_text = update.message.text.strip()
-    if len(user_text) == 0:
-        return
-
-    await _process_and_reply(update, context, user_text, is_audio=False)
+    if user_text:
+        await _process_and_reply(update, context, user_text)
 
 
-# Voice message handler (No changes needed, as TTS is still unsupported by OpenRouter)
+# Voice message handler (မူလအတိုင်းထားသည်)
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_bot_active() and update.effective_user.id not in ADMIN_IDS:
-        await update.message.reply_text("⛔️ Bot ကို ပြုပြင်နေပါသည်။ ခဏစောင့်ပါ။")
+        await update.message.reply_text("⛔️ Bot ပြုပြင်နေပါသည်။")
         return
 
     voice_file = update.message.voice
-    if not voice_file:
-        await update.message.reply_text("အသံဖိုင်မတွေ့ပါ။")
-        return
+    if not voice_file: return
 
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=constants.ChatAction.UPLOAD_PHOTO)
-    status_message = await update.message.reply_text("🎤 **အသံကို စာသားအဖြစ် ပြောင်းလဲပြီး ဘာသာပြန်နေပါသည်...**") 
+    status_message = await update.message.reply_text("🎤 <b>အသံကို နားထောင်နေပါသည်...</b>", parse_mode=constants.ParseMode.HTML)
 
     try:
+        # Temp directory helps in Cloud/PaaS environments for short-lived files
         with tempfile.TemporaryDirectory() as tmp_dir:
             ogg_path = os.path.join(tmp_dir, "voice.ogg")
             mp3_path = os.path.join(tmp_dir, "voice.mp3")
@@ -177,44 +208,33 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await voice_file.download_to_drive(ogg_path)
 
             if convert_ogg_to_mp3(ogg_path, mp3_path):
-                # Conversion အောင်မြင်သော်လည်း OpenRouter က Transcription ကို တိုက်ရိုက်မပံ့ပိုးပါ။
+                # Note: OpenRouter usually doesn't support direct audio upload yet in this template
                 await context.bot.edit_message_text(
                     chat_id=update.effective_chat.id,
                     message_id=status_message.message_id,
-                    text="⚠️ **အသံကို စာသားအဖြစ် ပြောင်းလဲခြင်း မအောင်မြင်ပါ။** ဤ API သည် Audio Transcription ကို တိုက်ရိုက်မပံ့ပိုးပါ။ စာသားရိုက်ပြီး ပို့ပေးပါ။"
+                    text="⚠️ Audio transcription API မရသေးပါ။ စာရိုက်ပို့ပေးပါ။"
                 )
             else:
-                # Conversion မအောင်မြင်ပါက (ffmpeg error)
                 await context.bot.edit_message_text(
                     chat_id=update.effective_chat.id,
                     message_id=status_message.message_id,
-                    text="❌ **အသံဖိုင်ပြောင်းလဲရာတွင် ချို့ယွင်းချက်ရှိနေပါသည်။** (Server တွင် `ffmpeg` ထည့်သွင်းမှု ပြဿနာရှိနိုင်သည်)"
+                    text="❌ အသံဖိုင် Error"
                 )
-
     except Exception as e:
-        await update.message.reply_text(f"အသံဖိုင်ကိုင်တွယ်ရာတွင် ပြဿနာရှိနေပါသည်။ {str(e)}")
+        await update.message.reply_text("Error handling voice.")
 
 
-# Callback Handler for "Explain More" (No changes needed)
+# Callback Handler
 async def user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-
-    if query.data.startswith("admin_"):
-        return
-
+    if query.data.startswith("admin_"): return
     await query.answer()
 
     if query.data == "explain":
         last_text = context.user_data.get('last_query')
-        last_sender = context.user_data.get('last_sender')
-
-        if last_sender != query.from_user.id:
-            await query.message.reply_text("သင့်ရဲ့ မေးခွန်းဟောင်းမဟုတ်ပါ။")
-            return
-
         if last_text:
-            await query.message.reply_text("⏳ အသေးစိတ်ရှင်းပြခဲ့ပါသည်...")
+            await query.message.reply_text("⏳ ရှင်းပြနေပါသည်...")
             explanation = await asyncio.to_thread(get_explanation, last_text)
             await query.message.reply_text(f"📖 <b>ရှင်းလင်းချက်:</b>\n\n{explanation}", parse_mode=constants.ParseMode.HTML)
         else:
-            await query.message.reply_text("အရင်မေးခွန်း မတွေ့ပါ။")
+            await query.message.reply_text("Data မရှိတော့ပါ။")
