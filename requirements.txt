@@ -4,3 +4,4 @@ pydub
 python-dotenv
 ffmpeg-python
 requests
+gTTS
