@@ -9,8 +9,7 @@ load_dotenv()
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
 # ================================
-#  Gemini 2.0 Flash Experimental FREE MODEL
-#  (မိတ်ဆွေအသုံးပြုလိုသော Model)
+#  Gemini 2.0 Flash Experimental (Free)
 # ================================
 NEW_MODEL = "google/gemini-2.0-flash-exp:free"
 
@@ -20,13 +19,13 @@ NEW_MODEL = "google/gemini-2.0-flash-exp:free"
 def get_translation(text: str):
     url = "https://openrouter.ai/api/v1/chat/completions"
 
-    # Prompt ကို messages.py က ဖမ်းယူလို့ရမယ့် Format အတိအကျဖြစ်အောင် ပြင်ဆင်ထားသည်
+    # Prompt: Format အတိအကျရအောင် ခိုင်းစေခြင်း
     prompt = f"""
     You are a professional Thai-Myanmar dictionary.
     Input: "{text}"
 
     INSTRUCTIONS:
-    1. Detect input language.
+    1. Detect input language (Thai or Myanmar).
     2. If Input is Thai -> Translate to Myanmar.
     3. If Input is Myanmar -> Translate to Thai.
     4. Provide the output strictly in the following format.
@@ -42,7 +41,7 @@ def get_translation(text: str):
         "model": NEW_MODEL,
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.3,
-        "max_tokens": 600
+        "max_tokens": 800,
     }
 
     headers = {
@@ -52,12 +51,14 @@ def get_translation(text: str):
     }
 
     try:
-        r = requests.post(url, json=payload, headers=headers, timeout=30)
+        # TIMEOUT INCREASED: 60 seconds
+        # Free model တွေက ကြာတတ်လို့ စက္ကန့် ၆၀ အထိ စောင့်ခိုင်းလိုက်တာပါ
+        r = requests.post(url, json=payload, headers=headers, timeout=60)
         r.raise_for_status()
         return r.json()["choices"][0]["message"]["content"]
 
     except Exception as e:
-        # Error တက်ရင် messages.py က သိအောင် Error စာသားပြန်ပို့ပေးမယ်
+        print(f"❌ Translation API Error: {e}")
         return f"Error: {str(e)}"
 
 
@@ -83,7 +84,7 @@ def get_explanation(text: str):
         "model": NEW_MODEL,
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.5,
-        "max_tokens": 800
+        "max_tokens": 1000
     }
 
     headers = {
@@ -93,9 +94,11 @@ def get_explanation(text: str):
     }
 
     try:
-        r = requests.post(url, json=payload, headers=headers, timeout=40)
+        # TIMEOUT INCREASED: 60 seconds
+        r = requests.post(url, json=payload, headers=headers, timeout=60)
         r.raise_for_status()
         return r.json()["choices"][0]["message"]["content"]
 
     except Exception as e:
+        print(f"❌ Explanation API Error: {e}")
         return "မေးမြန်းမှု များပြားနေပါသဖြင့် ခေတ္တစောင့်ဆိုင်းပေးပါ။"
