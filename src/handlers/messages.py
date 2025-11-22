@@ -11,7 +11,6 @@ from src.utils.audio import convert_ogg_to_mp3
 from src.utils.state import is_bot_active
 from src.config import ADMIN_IDS
 
-
 # /start command handler
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_text = (
@@ -39,10 +38,11 @@ async def _process_and_reply(update: Update, context: ContextTypes.DEFAULT_TYPE,
     for attempt in range(MAX_RETRIES + 1):
         try:
             # OpenRouter ကနေ ဘာသာပြန်ယူတယ်
-            response_text = get_translation(user_input)
+            response_text = await asyncio.to_thread(get_translation, user_input)
 
-            if "ระบบมีปัญหา" in response_text or "Error" in response_text:
-                raise Exception("API Error")
+            # OpenRouter က Error ဖြစ်ရင် ပြန်ပို့သော စာသားကို စစ်ဆေးပြီး Error ထုတ်
+            if "ระบบมีปัญหา" in response_text or "Error" in response_text or "Exception" in response_text:
+                raise Exception(f"API Response Error: {response_text}")
 
             # Save last query for "Explain More"
             context.user_data['last_sender'] = update.effective_user.id
@@ -60,11 +60,20 @@ async def _process_and_reply(update: Update, context: ContextTypes.DEFAULT_TYPE,
             return
 
         except Exception as e:
+            error_message = str(e) # အမှန်တကယ် ဖြစ်ပေါ်လာသော Error Message ကို ယူသည်
+            
             if attempt < MAX_RETRIES:
                 await asyncio.sleep(RETRY_DELAY)
                 await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=constants.ChatAction.TYPING)
             else:
-                await update.message.reply_text("⚠️ ယာယီချို့ယွင်းချက်ရှိနေပါသည်။ ခဏနောက် ထပ်ကြိုးစားကြည့်ပါ။")
+                # နောက်ဆုံးကြိုးစားမှုတွင် ချို့ယွင်းပါက Error Message ကို Admin ကိုသာ ပြသစေပါမယ်။
+                final_error_msg = "⚠️ ယာယီချို့ယွင်းချက်ရှိနေပါသည်။ ခဏနောက် ထပ်ကြိုးစားကြည့်ပါ။"
+                
+                # Admin များအတွက် Debugging အချက်အလက် ထည့်သွင်းပေးခြင်း
+                if update.effective_user.id in ADMIN_IDS:
+                    final_error_msg += f"\n\n**[DEBUG]** Final API Error: <code>{error_message[:400]}...</code>"
+                
+                await update.message.reply_text(final_error_msg, parse_mode=constants.ParseMode.HTML)
 
 
 # Text message handler
@@ -80,7 +89,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await _process_and_reply(update, context, user_text, is_audio=False)
 
 
-# Voice message handler
+# Voice message handler (အသံဖိုင်ပြဿနာကို ရှင်းလင်းစွာ အသိပေးရန် ပြင်ဆင်ထားသည်)
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_bot_active() and update.effective_user.id not in ADMIN_IDS:
         await update.message.reply_text("⛔️ Bot ကို ပြုပြင်နေပါသည်။ ခဏစောင့်ပါ။")
@@ -91,22 +100,33 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("အသံဖိုင်မတွေ့ပါ။")
         return
 
-    await update.message.reply_text("🎤 အသံကို ခွဲခြမ်းစိတ်ဖြာနေပါသည်...")
+    # 1. အသံကို စာသားအဖြစ် ပြောင်းလဲနေကြောင်း အသိပေး
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=constants.ChatAction.UPLOAD_PHOTO)
+    status_message = await update.message.reply_text("🎤 **အသံကို စာသားအဖြစ် ပြောင်းလဲပြီး ဘာသာပြန်နေပါသည်...**") 
 
     try:
         with tempfile.TemporaryDirectory() as tmp_dir:
             ogg_path = os.path.join(tmp_dir, "voice.ogg")
             mp3_path = os.path.join(tmp_dir, "voice.mp3")
 
+            # 2. OGG file ကို Download ဆွဲ
             await voice_file.download_to_drive(ogg_path)
 
+            # 3. OGG ကို MP3 သို့ ပြောင်းလဲ
             if convert_ogg_to_mp3(ogg_path, mp3_path):
-                # အသံကို စာသားအဖြစ် မပြောင်းတော့ဘူး။ တိုက်ရိုက် OpenRouter ကို ပို့လိုက်တယ်
-                # ဒါပေမယ် Telegram က voice ကို file အနေနဲ့ပဲ ပို့နိုင်တယ်။ OpenRouter က audio မလက်ခံဘူး။
-                # ဒါကြောင့် အသံကို စာသားအဖြစ် မပြောင်းဘဲ အသုံးမပြုတော့ဘူး (လောလောဆယ် ပိတ်ထားတယ်)
-                await update.message.reply_text("⚠️ အသံဘာသာပြန်ခြင်း ယာယီရပ်ထားပါသည်။ စာသားရိုက်ပို့ပါ။")
+                # Conversion အောင်မြင်သော်လည်း OpenRouter က Transcription ကို တိုက်ရိုက်မပံ့ပိုးပါ။
+                await context.bot.edit_message_text(
+                    chat_id=update.effective_chat.id,
+                    message_id=status_message.message_id,
+                    text="⚠️ **အသံကို စာသားအဖြစ် ပြောင်းလဲခြင်း မအောင်မြင်ပါ။** ဤ API သည် Audio Transcription ကို တိုက်ရိုက်မပံ့ပိုးပါ။ စာသားရိုက်ပြီး ပို့ပေးပါ။"
+                )
             else:
-                await update.message.reply_text("အသံဖိုင်ပြောင်းလဲရာတွင် ချို့ယွင်းချက်ရှိနေပါသည်။")
+                # Conversion မအောင်မြင်ပါက (ffmpeg error)
+                await context.bot.edit_message_text(
+                    chat_id=update.effective_chat.id,
+                    message_id=status_message.message_id,
+                    text="❌ **အသံဖိုင်ပြောင်းလဲရာတွင် ချို့ယွင်းချက်ရှိနေပါသည်။** (Server တွင် `ffmpeg` ထည့်သွင်းမှု ပြဿနာရှိနိုင်သည်)"
+                )
 
     except Exception as e:
         await update.message.reply_text(f"အသံဖိုင်ကိုင်တွယ်ရာတွင် ပြဿနာရှိနေပါသည်။ {str(e)}")
@@ -126,11 +146,12 @@ async def user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         last_sender = context.user_data.get('last_sender')
 
         if last_sender != query.from_user.id:
-            await query.message.reply_text("သင့်ရဲ့ မေးခွန်းဟောင်းမဟုတ်ပါ။")
+            await query.message.reply_text("သင့်ရဲ့ မေးခွန်းဟောင်းမဟုတ်ပါ။")
             return
 
         if last_text:
             await query.message.reply_text("⏳ အသေးစိတ်ရှင်းပြခဲ့ပါသည်...")
+            # Blocking call ကို Thread ထဲ ပို့
             explanation = await asyncio.to_thread(get_explanation, last_text)
             await query.message.reply_text(f"📖 <b>ရှင်းလင်းချက်:</b>\n\n{explanation}", parse_mode=constants.ParseMode.HTML)
         else:
