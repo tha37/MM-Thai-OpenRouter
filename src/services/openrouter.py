@@ -1,14 +1,20 @@
 # src/services/openrouter.py
 import os
 import requests
+from dotenv import load_dotenv
+
+load_dotenv()
 
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+
+# Model ID ကို 'google/gemma-2-9b-it:free' မှ 'google/gemma-7b-it' သို့ ပြင်ဆင်ပါမယ် (404 Error ဖြေရှင်းရန်)
+NEW_MODEL = "google/gemma-7b-it" 
 
 def get_translation(text: str):
     url = "https://openrouter.ai/api/v1/chat/completions"
     
-    # အခမဲ့ + တကယ်ရှိပြီး အလုပ်ဖြစ်တဲ့ model (အရမ်းကောင်းတယ်)
-    model = "google/gemma-2-9b-it:free"  # ဒါက တကယ် ရှိတယ်၊ အရမ်းမြန်တယ်၊ မြန်မာ+ထိုင်း အရမ်းကောင်းတယ်
+    # Model ID ကို ပြင်လိုက်ပါပြီ
+    model = NEW_MODEL 
     
     prompt = f"""
     You are the world's best Thai ↔ Myanmar dictionary.
@@ -47,7 +53,8 @@ def get_translation(text: str):
 
 def get_explanation(text: str):
     url = "https://openrouter.ai/api/v1/chat/completions"
-    model = "google/gemma-2-9b-it:free"  # ဒီဟာ တကယ်ရှိတယ်
+    # Model ID ကို ပြင်လိုက်ပါပြီ
+    model = NEW_MODEL 
     
     prompt = f"""
     ให้คำอธิบายเชิงลึกสำหรับคำหรือวลีนี้: "{text}"
@@ -56,7 +63,7 @@ def get_explanation(text: str):
     - คำที่คล้ายกัน 3-5 คำ
     - ข้อควรระวัง (ถ้ามี)
     ตอบเป็นภาษาพม่าถ้าคำถามเป็นไทย
-    ตอบเป็นภาษาไทยถ้าคำถามเป็นพม่ာ
+    ตอบเป็นภาษาไทยถ้าคำถามเป็นพม่า
     """
     
     payload = {
